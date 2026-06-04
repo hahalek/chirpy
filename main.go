@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -68,46 +69,62 @@ func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type reqParameters struct {
 		Body string `json:"body"`
 	}
-	defer r.Body.Close()
-
-	decoder := json.NewDecoder(r.Body)
 	reqParam := reqParameters{}
-	err := decoder.Decode(&reqParam)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+	decodeRequest(w, r, &reqParam)
+	if correct := checkChirtLength(w, reqParam.Body); correct == false {
 		return
 	}
-	if len(reqParam.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
-		return
-	}
+	cleanedBody := checkChirpProfanity(w, reqParam.Body)
 
 	type respValues struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 	respParam := respValues{
-		Valid: true,
+		CleanedBody: cleanedBody,
 	}
 
 	respondWithJSON(w, http.StatusOK, respParam)
 }
 
-/*
-	func decodeRequest(w http.ResponseWriter, r *http.Request, requestStructure *interface{}) {
-		defer r.Body.Close()
-
-		decoder := json.NewDecoder(r.Body)
-		reqParam := requestStructure
-		err := decoder.Decode(&reqParam)
-		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "Something went wrong")
-			return
-		}
+func decodeRequest(w http.ResponseWriter, r *http.Request, reqParam any) {
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(reqParam)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+		return
 	}
-*/
+}
+
+func checkChirtLength(w http.ResponseWriter, chirp string) bool {
+	if len(chirp) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+		return false
+	}
+	return true
+}
+
+func checkChirpProfanity(w http.ResponseWriter, chirp string) string {
+	profanities := map[string]bool{
+		"kerfuffle": true,
+		"sharbert":  true,
+		"fornax":    true,
+	}
+	words := strings.Fields(chirp)
+	cleanedWords := []string{}
+	for _, word := range words {
+		if profanities[strings.ToLower(word)] {
+			word = "****"
+		}
+		cleanedWords = append(cleanedWords, word)
+	}
+	cleanedChirp := strings.Join(cleanedWords, " ")
+	return cleanedChirp
+}
+
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
 	response, err := json.Marshal(payload)
 	if err != nil {
