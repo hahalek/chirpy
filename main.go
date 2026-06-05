@@ -1,21 +1,45 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/hahalek/chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Printf(err.Error())
+	}
+	dbQueries := database.New(db)
+
 	const filepathRoot = "."
 	const port = "8080"
 
 	mux := http.NewServeMux()
 	apiCfg := apiConfig{
 		requestsProcessed: atomic.Int32{},
+		dbQ:               dbQueries,
+	}
+
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
@@ -23,6 +47,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.getMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
 	mux.HandleFunc("POST /api/validate_chirp", validateChirp)
+	mux.HandleFunc("POST /api/users", apiCfg.addUser)
 
 	server := &http.Server{
 		Handler: mux,
@@ -41,6 +66,7 @@ func healthzHandler(w http.ResponseWriter, req *http.Request) {
 
 type apiConfig struct {
 	requestsProcessed atomic.Int32
+	dbQ               *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -66,6 +92,29 @@ func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(http.StatusText(http.StatusOK)))
+}
+
+func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	type requestStructure struct {
+		Email string `json:"email"`
+	}
+	reqParam := requestStructure{}
+	decodeRequest(w, r, reqParam)
+	user, err := cfg.dbQ.CreateUser(r.Context(), reqParam.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+		return
+	}
+
+	response := database.User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	respondWithJSON(w, http.StatusCreated, response)
+
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
